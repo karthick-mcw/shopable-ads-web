@@ -113,10 +113,9 @@
         <button id="resetVideo">Reset Video</button>
         <select id="fpsSelector">
             <option value="auto">Auto-detect FPS</option>
-            <option value="23.98">23.98 fps</option>
-            <option value="24">24 fps</option>
             <option value="25">25 fps</option>
-            <option value="29.97">29.97 fps</option>
+            <option value="24">24 fps</option>
+            <option value="26">26 fps</option>
             <option value="30">30 fps</option>
         </select>
     </div>
@@ -142,9 +141,8 @@
         const statusElement = document.getElementById('status');
         const ctx = canvas.getContext('2d');
 
-        let boundingBoxes = {};
         let trackingData = {};
-        let videoFps = 'auto';
+        let videoFps = 25;
         let detectedFps = 0;
         let isOverlayVisible = true;
         let lastFrameTime = 0;
@@ -152,49 +150,37 @@
         let isDataLoaded = false;
 
         // Load tracking data
-        Promise.all([
-            fetch('data/bounding_boxes.json')
-                .then(res => {
-                    if (!res.ok) throw new Error(`Failed to load bounding_boxes.json: ${res.status}`);
-                    return res.json();
-                }),
-            fetch('data/tracked_id.json')
-                .then(res => res.json())
-                .catch(() => {
-                    console.log('No track_id.json found, using empty object');
-                    return {};
-                })
-        ]).then(([boxes, tracking]) => {
-            boundingBoxes = boxes;
-            trackingData = tracking || {};
-            isDataLoaded = true;
-            loadingElement.style.display = 'none';
-            
-            // Count total frames
-            const totalFrames = Object.keys(boundingBoxes).length;
-            
-            // Detect highest tracking ID
-            let maxId = 0;
-            Object.values(boundingBoxes).forEach(frameBboxes => {
-                frameBboxes.forEach(box => {
-                    maxId = Math.max(maxId, box.id);
+        fetch('data/tracked_id.json')
+            .then(res => res.json())
+            .then(data => {
+                trackingData = data.frames;
+                isDataLoaded = true;
+                loadingElement.style.display = 'none';
+                
+                const totalFrames = Object.keys(trackingData).length;
+                let maxId = 0;
+                Object.values(trackingData).forEach(frameBboxes => {
+                    frameBboxes.forEach(box => {
+                        maxId = Math.max(maxId, box.id);
+                    });
                 });
+                
+                statusElement.textContent = `Loaded ${totalFrames} frames of tracking data with ${maxId} unique objects`;
+                console.log(`Loaded tracking data: ${totalFrames} frames, ${maxId} objects`);
+                
+                calculateFps(totalFrames);
+            })
+            .catch(err => {
+                console.error('Error loading tracking data:', err);
+                loadingElement.textContent = 'Error loading tracking data!';
+                statusElement.textContent = `Error: ${err.message}`;
             });
-            
-            statusElement.textContent = `Loaded ${totalFrames} frames of tracking data with ${maxId} unique objects`;
-            console.log(`Loaded tracking data: ${totalFrames} frames, ${maxId} objects`);
-        }).catch(err => {
-            console.error('Error loading tracking data:', err);
-            loadingElement.textContent = 'Error loading tracking data!';
-            statusElement.textContent = `Error: ${err.message}`;
-        });
 
         // Set up video and canvas
         video.addEventListener('loadedmetadata', () => {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             
-            // Update canvas size when video dimensions change
             function updateCanvasSize() {
                 canvas.style.width = video.clientWidth + 'px';
                 canvas.style.height = video.clientHeight + 'px';
@@ -202,54 +188,32 @@
             
             updateCanvasSize();
             window.addEventListener('resize', updateCanvasSize);
-            
-            // Try to detect FPS from video
-            detectVideoFps();
         });
 
-        function detectVideoFps() {
-            // Try to automatically detect FPS
-            const frameCounter = { count: 0, startTime: 0 };
-            
-            function countFrames() {
-                if (frameCounter.count === 0) {
-                    frameCounter.startTime = performance.now();
-                }
-                
-                frameCounter.count++;
-                
-                if (frameCounter.count >= 10) {
-                    const elapsed = (performance.now() - frameCounter.startTime) / 1000;
-                    detectedFps = frameCounter.count / elapsed;
-                    console.log(`Detected FPS: ${detectedFps.toFixed(2)}`);
-                    return;
-                }
-                
-                requestAnimationFrame(countFrames);
-            }
-            
-            requestAnimationFrame(countFrames);
+        function calculateFps(totalFrames) {
+            video.addEventListener('loadedmetadata', () => {
+                const videoDuration = video.duration;
+                const fps = totalFrames / videoDuration;
+                console.log(`Calculated FPS: ${fps.toFixed(2)}`);
+                statusElement.textContent += ` | Calculated FPS: ${fps.toFixed(2)}`;
+            });
         }
 
         function getCurrentFrame() {
-        const fps = 25; // Set FPS to 22.89
-
-        return Math.floor(video.currentTime * fps);
+            const fps = videoFps === 'auto' ? detectedFps : parseFloat(videoFps);
+            return Math.floor(video.currentTime * fps);
         }
 
-        // Efficient frame rate calculation
         function updateFrameRate() {
             const now = performance.now();
             if (lastFrameTime) {
                 const delta = now - lastFrameTime;
                 frameRates.push(1000 / delta);
                 
-                // Keep only the last 10 measurements
                 if (frameRates.length > 10) {
                     frameRates.shift();
                 }
                 
-                // Calculate average frame rate
                 const avgFrameRate = frameRates.reduce((a, b) => a + b, 0) / frameRates.length;
                 detectedFps = avgFrameRate;
             }
@@ -268,21 +232,19 @@
             
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            if (boundingBoxes[frame]) {
-                objectCount.textContent = boundingBoxes[frame].length;
+            if (trackingData[frame]) {
+                objectCount.textContent = trackingData[frame].length;
                 
-                boundingBoxes[frame].forEach(box => {
+                trackingData[frame].forEach(box => {
                     const [x1, y1, x2, y2] = box.bbox;
                     const width = x2 - x1;
                     const height = y2 - y1;
                     const id = box.id;
                     
-                    // Generate a consistent color based on ID
-                    const hue = (id * 137) % 360; // Use prime number for better distribution
+                    const hue = (id * 137) % 360;
                     const bgColor = `hsla(${hue}, 100%, 50%, 0.2)`;
                     const borderColor = `hsla(${hue}, 100%, 40%, 0.5)`;
                     
-                    // Draw bounding box
                     ctx.fillStyle = bgColor;
                     ctx.fillRect(x1, y1, width, height);
                     
@@ -290,7 +252,6 @@
                     ctx.lineWidth = 2;
                     ctx.strokeRect(x1, y1, width, height);
                     
-                    // Draw ID label
                     ctx.fillStyle = borderColor;
                     ctx.font = '14px Arial';
                     ctx.fillText(`ID:${id}`, x1, y1 - 5);
@@ -302,8 +263,8 @@
             requestAnimationFrame(updateOverlay);
         }
 
-        // Handle click on video
         clickLayer.addEventListener('click', (event) => {
+            event.preventDefault();
             const rect = video.getBoundingClientRect();
             const scaleX = video.videoWidth / rect.width;
             const scaleY = video.videoHeight / rect.height;
@@ -314,16 +275,16 @@
             const frame = getCurrentFrame().toString();
             debugInfo.textContent = `x: ${Math.round(x)}, y: ${Math.round(y)}`;
             
-            if (boundingBoxes[frame]) {
+            if (trackingData[frame]) {
                 let clickedAny = false;
                 
-                for (const box of boundingBoxes[frame]) {
+                for (const box of trackingData[frame]) {
                     const [x1, y1, x2, y2] = box.bbox;
 
                     if (x >= x1 && x <= x2 && y >= y1 && y <= y2) {
                         clickedAny = true;
                         console.log(`Clicked object ${box.id}`);
-                        const url = trackingData[box.id];
+                        const url = box.link;
                         if (url) {
                             window.open(url, '_blank');
                         } else {
@@ -341,7 +302,6 @@
             }
         });
 
-        // Toggle overlay visibility
         toggleOverlayBtn.addEventListener('click', () => {
             isOverlayVisible = !isOverlayVisible;
             toggleOverlayBtn.textContent = isOverlayVisible ? 'Hide Overlay' : 'Show Overlay';
@@ -351,32 +311,28 @@
             }
         });
 
-        // Reset video
         resetVideoBtn.addEventListener('click', () => {
             video.currentTime = 0;
             video.play();
         });
 
-        // Handle FPS selector
         fpsSelector.addEventListener('change', () => {
             videoFps = fpsSelector.value;
             console.log(`FPS set to: ${videoFps}`);
         });
 
-        // Auto-replay when video ends
-        video.addEventListener('ended', () => {
-            video.currentTime = 0;
-            video.play();
+        video.addEventListener('seeked', () => {
+            // Reset frame rate calculation when video is seeked
+            lastFrameTime = 0;
+            frameRates = [];
         });
 
-        // Start overlay updates when video plays
         video.addEventListener('play', () => {
             if (!isDataLoaded) {
                 loadingElement.style.display = 'block';
             }
         });
 
-        // Start the animation loop
         requestAnimationFrame(updateOverlay);
     </script>
 </body>
